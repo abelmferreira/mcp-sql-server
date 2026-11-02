@@ -1,6 +1,6 @@
 {
   "name": "@abelmferreira/mcp-sql-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MCP server for SQL Server: query, monitor and analyze with read-only mode and SSH tunnel",
   "keywords": [
     "anthropic",

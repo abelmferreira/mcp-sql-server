@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [1.0.0] - Unreleased
+## [1.0.1] - 2026-11-02
+
+Same code as 1.0.0. First release made by the pipeline (npm Trusted Publishing
+and the Docker image), after 1.0.0 was published by hand.
+
+## [1.0.0] - 2026-11-02
 
 First release as `@abelmferreira/mcp-sql-server` (npm) and
 `abelmferreira/mcp-sql-server` (Docker Hub), a fork of
