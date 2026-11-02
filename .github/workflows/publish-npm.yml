@@ -1,0 +1,71 @@
+name: Publish npm
+
+# Publishes @abelmferreira/mcp-sql-server when a v* tag is pushed.
+# Authentication uses npm Trusted Publishing (OIDC): there is no npm token in
+# the repository. The trusted publisher on npmjs.com must point to
+# owner "abelmferreira", repository "mcp-sql-server", workflow "publish-npm.yml".
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # OIDC token for Trusted Publishing and provenance
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Check tag matches package.json
+        id: meta
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          pkg_version="$(node -p 'require("./package.json").version')"
+          if [ "${REF_NAME#v}" != "$pkg_version" ]; then
+            echo "::error::Tag $REF_NAME does not match package.json version $pkg_version"
+            exit 1
+          fi
+          case "$pkg_version" in
+            *-*) echo "dist-tag=next" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "dist-tag=latest" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      # Trusted Publishing needs npm >= 11.5.1 (Node 22 ships npm 10).
+      - name: Update npm
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      # `npm ci` runs "prepare" (build); `npm publish` builds again before packing.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      # No NODE_AUTH_TOKEN: npm exchanges the GitHub OIDC token for a
+      # short-lived publish credential. Provenance comes from publishConfig.
+      - name: Publish
+        env:
+          DIST_TAG: ${{ steps.meta.outputs.dist-tag }}
+        run: npm publish --access public --provenance --tag "$DIST_TAG"
