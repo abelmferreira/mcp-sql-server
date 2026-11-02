@@ -1,7 +1,35 @@
 {
-  "name": "@fabriciofs/mcp-sql-server",
-  "version": "1.0.7",
-  "description": "MCP Server for SQL Server integration with Claude Code - Query, Monitor, and Analyze",
+  "name": "@abelmferreira/mcp-sql-server",
+  "version": "1.0.0",
+  "description": "MCP server for SQL Server: query, monitor and analyze with read-only mode and SSH tunnel",
+  "keywords": [
+    "anthropic",
+    "claude",
+    "claude-code",
+    "database",
+    "mcp",
+    "mcp-server",
+    "microsoft-sql-server",
+    "model-context-protocol",
+    "read-only",
+    "sql",
+    "sql-server",
+    "ssh-tunnel",
+    "tsql"
+  ],
+  "homepage": "https://github.com/abelmferreira/mcp-sql-server#readme",
+  "bugs": {
+    "url": "https://github.com/abelmferreira/mcp-sql-server/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abelmferreira/mcp-sql-server.git"
+  },
+  "license": "MIT",
+  "author": "Abel Ferreira (https://github.com/abelmferreira)",
+  "contributors": [
+    "fabriciofs (author of the original @fabriciofs/mcp-sql-server, https://github.com/fabriciofs/mcp-sql-server)"
+  ],
   "type": "module",
   "main": "build/index.js",
   "bin": {
@@ -25,37 +53,25 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:ui": "vitest --ui"
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
-  "keywords": [
-    "mcp",
-    "sql-server",
-    "claude",
-    "anthropic",
-    "database",
-    "model-context-protocol"
-  ],
-  "author": "fabriciofs",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/fabriciofs/mcp-sql-server.git"
-  },
-  "bugs": {
-    "url": "https://github.com/fabriciofs/mcp-sql-server/issues"
-  },
-  "homepage": "https://github.com/fabriciofs/mcp-sql-server#readme",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",
     "mssql": "^12.2.0",
+    "ssh2": "^1.17.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {
     "@types/mssql": "^9.1.8",
     "@types/node": "^25.0.2",
+    "@types/ssh2": "^1.15.5",
     "@vitest/coverage-v8": "^2.1.8",
     "typescript": "^5.9.3",
     "vitest": "^2.1.8"

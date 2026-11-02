@@ -1,32 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock mssql with factory function to avoid hoisting issues
-vi.mock('mssql', () => {
-  const mockRequest = {
-    input: vi.fn().mockReturnThis(),
+// Mock mssql: the pool hands out streaming requests driven by one scripted `query` mock
+vi.mock('mssql', async () => {
+  const { fakePool, FakeTransaction } = await import('../../mocks/fake-pool.js');
+  const script = {
+    input: vi.fn(),
     query: vi.fn(),
   };
-
   const mockPool = {
     connected: true,
-    request: vi.fn(() => mockRequest),
+    ...fakePool(script),
     close: vi.fn().mockResolvedValue(undefined),
     on: vi.fn(),
+    _script: script,
   };
-
-  return {
-    default: {
-      connect: vi.fn().mockResolvedValue(mockPool),
-      NVarChar: Symbol('NVarChar'),
-      BigInt: Symbol('BigInt'),
-      Float: Symbol('Float'),
-      Bit: Symbol('Bit'),
-    },
-    connect: vi.fn().mockResolvedValue(mockPool),
+  const types = {
     NVarChar: Symbol('NVarChar'),
     BigInt: Symbol('BigInt'),
     Float: Symbol('Float'),
     Bit: Symbol('Bit'),
+    Transaction: FakeTransaction,
+  };
+  return {
+    default: { connect: vi.fn().mockResolvedValue(mockPool), ...types },
+    connect: vi.fn().mockResolvedValue(mockPool),
+    ...types,
   };
 });
 
@@ -37,8 +35,8 @@ import { schemaListColumns } from '../../../src/tools/schema-list-columns.js';
 
 // Helper to get mock request from the pool
 async function getMockRequest() {
-  const pool = await sql.connect({} as never);
-  return pool.request();
+  const pool = (await sql.connect({} as never)) as unknown as { _script: { query: unknown } };
+  return pool._script as { query: unknown };
 }
 
 describe('schemaListTables', () => {

@@ -20,11 +20,14 @@ export async function schemaListIndexes(args: unknown): Promise<ToolResponse> {
         i.is_unique AS [isUnique],
         i.is_primary_key AS [isPrimaryKey],
         i.is_disabled AS [isDisabled],
-        STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS [columns],
+        STRING_AGG(
+          CASE WHEN ic.is_included_column = 0 THEN c.name END,
+          ', '
+        ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id) AS [columns],
         STRING_AGG(
           CASE WHEN ic.is_included_column = 1 THEN c.name END,
           ', '
-        ) WITHIN GROUP (ORDER BY c.name) AS [includedColumns],
+        ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id) AS [includedColumns],
         ps.row_count AS [rowCount],
         CAST(ROUND(ps.used_page_count * 8.0 / 1024, 2) AS DECIMAL(18,2)) AS [sizeMB],
         ius.user_seeks AS [seeks],

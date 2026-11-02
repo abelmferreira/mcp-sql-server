@@ -35,9 +35,9 @@ describe('validateQuery', () => {
       expect(result.valid).toBe(true);
     });
 
-    it('should accept SET SHOWPLAN queries', () => {
+    it('should reject SET SHOWPLAN (session state; plans go through getEstimatedPlan)', () => {
       const result = validateQuery('SET SHOWPLAN_XML ON');
-      expect(result.valid).toBe(true);
+      expect(result.valid).toBe(false);
     });
 
     it('should accept lowercase queries', () => {
@@ -110,8 +110,7 @@ describe('validateQuery', () => {
     it('should reject SELECT with embedded INSERT', () => {
       const result = validateQuery('SELECT * FROM users; INSERT INTO users VALUES (1)');
       expect(result.valid).toBe(false);
-      // Blocked keyword is detected before stacked query pattern
-      expect(result.reason).toContain('INSERT');
+      expect(result.reason).toContain('Multiple statements');
     });
 
     it('should reject SELECT with embedded UPDATE', () => {
@@ -213,7 +212,7 @@ describe('validateQuery', () => {
     it('should reject queries with EXEC XP_CMDSHELL', () => {
       const result = validateQuery('SELECT 1; EXEC xp_cmdshell "dir"');
       expect(result.valid).toBe(false);
-      expect(result.reason).toContain('EXEC');
+      expect(result.reason).toContain('Multiple statements');
     });
 
     it('should reject SP_CONFIGURE', () => {
@@ -241,7 +240,7 @@ describe('validateQuery', () => {
     it('should reject SELECT INTO (creates tables)', () => {
       const result = validateQuery('SELECT * INTO #temp FROM users');
       expect(result.valid).toBe(false);
-      expect(result.reason).toContain('SELECT INTO');
+      expect(result.reason).toContain('INTO');
     });
 
     it('should reject SELECT INTO with @ variable', () => {
@@ -370,8 +369,8 @@ describe('getQueryType', () => {
     expect(getQueryType('WITH cte AS (SELECT 1) SELECT * FROM cte')).toBe('CTE');
   });
 
-  it('should return SHOWPLAN for SET SHOWPLAN queries', () => {
-    expect(getQueryType('SET SHOWPLAN_XML ON')).toBe('SHOWPLAN');
+  it('should return the first keyword for other statements', () => {
+    expect(getQueryType('SET SHOWPLAN_XML ON')).toBe('SET');
   });
 
   it('should return INSERT for INSERT queries', () => {

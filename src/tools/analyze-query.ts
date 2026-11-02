@@ -1,4 +1,4 @@
-import { executeQuery } from '../db/index.js';
+import { executeQuery, getEstimatedPlan } from '../db/index.js';
 import { analyzeQuerySchema } from '../validators/schemas.js';
 import { formatSuccess, formatError } from '../utils/formatters.js';
 import type { ToolResponse } from '../types.js';
@@ -19,25 +19,13 @@ export async function analyzeQuery(args: unknown): Promise<ToolResponse> {
     const warnings: string[] = [];
 
     if (includeExecutionPlan) {
-      // Get estimated execution plan
-      const planQuery = `SET SHOWPLAN_XML ON`;
-      const planOffQuery = `SET SHOWPLAN_XML OFF`;
-
+      // Estimated plan: the statement is compiled, not executed. Needs the SHOWPLAN permission.
       try {
-        await executeQuery(planQuery, {}, 1);
+        const planXml = await getEstimatedPlan(query, params);
 
-        // Execute the query to get the plan
-        const planResult = await executeQuery(query, params, 1);
-
-        await executeQuery(planOffQuery, {}, 1);
-
-        if (planResult.rows.length > 0) {
-          const planXml = (planResult.rows[0] as Record<string, string>)['Microsoft SQL Server 2005 XML Showplan'] ||
-            Object.values(planResult.rows[0] as Record<string, string>)[0];
-
+        if (planXml) {
           // Parse key information from the XML plan
-          const planInfo = parsePlanXml(planXml);
-          results.estimatedPlan = planInfo;
+          results.estimatedPlan = parsePlanXml(planXml);
         }
       } catch (planError) {
         warnings.push(`Could not get execution plan: ${planError instanceof Error ? planError.message : 'Unknown error'}`);

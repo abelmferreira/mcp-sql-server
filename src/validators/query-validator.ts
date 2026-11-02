@@ -1,3 +1,5 @@
+import { lex, significant, type Token } from './sql-lexer.js';
+
 /**
  * Result of query validation
  */
@@ -8,207 +10,190 @@ export interface ValidationResult {
 }
 
 /**
- * Keywords that are blocked in READONLY mode
+ * READONLY query validator.
+ *
+ * This is a safety net, NOT the security boundary: the boundary is a database
+ * login that can only read (db_datareader) plus the transaction that every
+ * READONLY query runs in and always rolls back (see db/execute.ts).
+ *
+ * T-SQL makes statement boundaries hard to see: the `;` is optional, so
+ * `SELECT 1 DELETE FROM t` is two statements. Instead of trying to split
+ * statements, the validator works on real tokens (comments, string literals
+ * and quoted identifiers are skipped by the lexer) and
+ *   1. requires the query to start with SELECT / WITH / "(";
+ *   2. accepts `;` only as a trailing terminator;
+ *   3. refuses every keyword that can start another (or a dangerous) statement,
+ *      wherever it appears as a bare word. Reserved words cannot be column
+ *      names without brackets anyway; quote with [ ] when a name collides.
+ *
+ * What is validated is the SQL text exactly as it is sent to the server:
+ * parameters are bound on the server (RPC arguments, never interpolated), so
+ * the text the caller wrote is the text that runs.
  */
-const BLOCKED_KEYWORDS = [
-  'INSERT',
-  'UPDATE',
-  'DELETE',
-  'DROP',
-  'ALTER',
-  'CREATE',
-  'TRUNCATE',
-  'EXEC',
-  'EXECUTE',
-  'MERGE',
-  'GRANT',
-  'REVOKE',
-  'DENY',
-  'BACKUP',
-  'RESTORE',
-  'BULK',
-  'OPENROWSET',
-  'OPENDATASOURCE',
-  'XP_',
-  'SP_CONFIGURE',
-  'SP_ADDLOGIN',
-  'SP_DROPLOGIN',
-  'DBCC',
-  'SHUTDOWN',
-  'KILL',
+
+/** Bare words refused anywhere in a READONLY query */
+const BLOCKED_KEYWORDS = new Set([
+  // Writes and DDL
+  'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE',
+  'INTO', // SELECT ... INTO creates a table; also OUTPUT INTO, COPY INTO
+  'BULK', 'READTEXT', 'WRITETEXT', 'UPDATETEXT',
+  // Dynamic and external execution
+  'EXEC', 'EXECUTE', 'OPENROWSET', 'OPENDATASOURCE', 'OPENQUERY',
+  // Permissions, server and database administration
+  'GRANT', 'REVOKE', 'DENY', 'BACKUP', 'RESTORE', 'DBCC', 'SHUTDOWN', 'KILL',
+  'RECONFIGURE', 'CHECKPOINT', 'USE', 'SETUSER', 'REVERT',
+  // Session state, variables, flow control and transactions (statements that
+  // can follow a SELECT without a ";")
+  'SET', 'DECLARE', 'WAITFOR', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVE', 'PRINT',
+  'RAISERROR', 'GOTO', 'IF', 'WHILE', 'RETURN', 'BREAK', 'CONTINUE',
+  'OPEN', 'CLOSE', 'DEALLOCATE',
+  // Service Broker: RECEIVE removes messages from a queue
+  'RECEIVE',
+  // Lock hints that take update/exclusive or serializable locks: even rolled
+  // back at the end, they can block other sessions while the query runs
+  'UPDLOCK', 'XLOCK', 'TABLOCKX', 'HOLDLOCK', 'SERIALIZABLE',
+]);
+
+/**
+ * Words that start a dangerous statement only when followed by a specific
+ * word. They are not reserved, so a bare column called SEND or ENABLE stays valid.
+ */
+const BLOCKED_PAIRS: Array<[string, string]> = [
+  ['NEXT', 'VALUE'], // NEXT VALUE FOR seq advances a sequence and survives ROLLBACK
+  ['SEND', 'ON'],
+  ['MOVE', 'CONVERSATION'],
+  ['GET', 'CONVERSATION'],
+  ['END', 'CONVERSATION'],
+  ['ENABLE', 'TRIGGER'],
+  ['DISABLE', 'TRIGGER'],
+  ['ADD', 'SIGNATURE'],
 ];
 
-/**
- * Keywords that are allowed to start a query in READONLY mode
- */
-const ALLOWED_START_KEYWORDS = ['SELECT', 'WITH', 'SET SHOWPLAN'];
+/** System procedure / extended procedure name prefixes (sp_executesql, xp_cmdshell, ...) */
+const BLOCKED_PREFIXES = ['SP_', 'XP_'];
 
-/**
- * Remove SQL comments from a query
- */
-function removeComments(query: string): string {
-  // Remove single-line comments (-- ...)
-  let result = query.replace(/--.*$/gm, '');
+/** Words that may start a READONLY query */
+const ALLOWED_START = new Set(['SELECT', 'WITH']);
 
-  // Remove multi-line comments (/* ... */)
-  result = result.replace(/\/\*[\s\S]*?\*\//g, '');
+function ok(queryType: string): ValidationResult {
+  return { valid: true, queryType };
+}
 
-  return result;
+function refuse(reason: string, queryType: string): ValidationResult {
+  return { valid: false, reason, queryType };
 }
 
 /**
- * Normalize a query for validation
+ * "GO" alone on its line: the batch separator of sqlcmd/SSMS. It is not T-SQL,
+ * this server sends one batch, and some tools split on it: refuse it.
  */
-function normalizeQuery(query: string): string {
-  return removeComments(query)
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toUpperCase();
-}
-
-/**
- * Check if query starts with an allowed keyword
- */
-function startsWithAllowed(normalizedQuery: string): boolean {
-  return ALLOWED_START_KEYWORDS.some((keyword) =>
-    normalizedQuery.startsWith(keyword)
-  );
-}
-
-/**
- * Check for blocked keywords in the query
- */
-function findBlockedKeyword(normalizedQuery: string): string | null {
-  for (const keyword of BLOCKED_KEYWORDS) {
-    // Use word boundary regex to avoid false positives
-    // e.g., "UPDATED_AT" should not match "UPDATE"
-    const regex = new RegExp(`\\b${keyword}\\b`, 'i');
-    if (regex.test(normalizedQuery)) {
-      return keyword;
-    }
-  }
-  return null;
-}
-
-/**
- * Check for bypass patterns that could be used to execute dangerous operations
- */
-function findBypassPattern(query: string): string | null {
-  const patterns: Array<{ pattern: RegExp; description: string }> = [
-    // Stacked queries
-    {
-      pattern: /;\s*(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC)/i,
-      description: 'Stacked query with write operation',
-    },
-    // SELECT INTO (creates a new table)
-    {
-      pattern: /\bINTO\s+[#@]?\w+\s*\(/i,
-      description: 'SELECT INTO creates tables',
-    },
-    {
-      pattern: /\bSELECT\b.*\bINTO\s+[#@]?\w+/i,
-      description: 'SELECT INTO creates tables',
-    },
-    // FOR UPDATE/DELETE locks
-    {
-      pattern: /\bFOR\s+(UPDATE|DELETE)\b/i,
-      description: 'FOR UPDATE/DELETE is not allowed',
-    },
-    // OPENQUERY with write operations
-    {
-      pattern: /\bOPENQUERY\s*\(/i,
-      description: 'OPENQUERY is not allowed',
-    },
-  ];
-
-  for (const { pattern, description } of patterns) {
-    if (pattern.test(query)) {
-      return description;
-    }
-  }
-
-  return null;
+function isBatchSeparator(query: string, token: Token): boolean {
+  const lineStart = Math.max(query.lastIndexOf('\n', token.start - 1), query.lastIndexOf('\r', token.start - 1)) + 1;
+  if (query.slice(lineStart, token.start).trim() !== '') return false;
+  const rest = query.slice(token.end).split(/[\r\n]/, 1)[0];
+  // GO may be followed by a repeat count and a comment
+  return /^[ \t]*(\d+)?[ \t]*(--.*)?$/.test(rest);
 }
 
 /**
  * Validate a query for READONLY mode
  *
- * @param query The SQL query to validate
+ * @param query The SQL text exactly as it will be sent to the server
  * @returns Validation result with valid flag and optional reason
  */
 export function validateQuery(query: string): ValidationResult {
-  const normalized = normalizeQuery(query);
-
-  // Check if query is empty
-  if (!normalized) {
-    return {
-      valid: false,
-      reason: 'Query is empty',
-      queryType: 'EMPTY',
-    };
+  const { tokens, error } = lex(query);
+  if (error) {
+    return refuse(error, 'INVALID');
   }
 
-  // Check if query starts with allowed keyword
-  if (!startsWithAllowed(normalized)) {
-    const firstWord = normalized.split(' ')[0];
-    return {
-      valid: false,
-      reason: `Query must start with SELECT or WITH (CTE). Found: ${firstWord}`,
-      queryType: firstWord,
-    };
+  const invalid = tokens.find((t) => t.type === 'invalid');
+  if (invalid) {
+    const code = invalid.text.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0');
+    return refuse(
+      `Character U+${code} is not allowed outside string literals and quoted identifiers`,
+      'INVALID'
+    );
   }
 
-  // Check for blocked keywords
-  const blockedKeyword = findBlockedKeyword(normalized);
-  if (blockedKeyword) {
-    return {
-      valid: false,
-      reason: `Keyword "${blockedKeyword}" is not allowed in READONLY mode`,
-      queryType: blockedKeyword,
-    };
+  const sig = significant(tokens);
+  if (sig.length === 0) {
+    return refuse('Query is empty', 'EMPTY');
   }
 
-  // Check for bypass patterns
-  const bypassPattern = findBypassPattern(query);
-  if (bypassPattern) {
-    return {
-      valid: false,
-      reason: `Query contains blocked pattern: ${bypassPattern}`,
-      queryType: 'BLOCKED_PATTERN',
-    };
+  // A leading ";" (";WITH cte AS ...") is an empty statement
+  let first = 0;
+  while (first < sig.length && sig[first].text === ';') first++;
+  if (first >= sig.length) {
+    return refuse('Query is empty', 'EMPTY');
   }
 
-  return {
-    valid: true,
-    queryType: 'SELECT',
-  };
+  const start = sig[first];
+  const startWord = start.type === 'word' ? start.text.toUpperCase() : start.text;
+  if (!ALLOWED_START.has(startWord) && start.text !== '(') {
+    return refuse(`Query must start with SELECT or WITH (CTE). Found: ${startWord}`, startWord);
+  }
+
+  for (let i = first; i < sig.length; i++) {
+    const token = sig[i];
+
+    // ";" may only be followed by more ";" (a trailing terminator)
+    if (token.type === 'punct' && token.text === ';') {
+      const following = sig.slice(i + 1).find((t) => t.text !== ';');
+      if (following) {
+        return refuse('Multiple statements are not allowed (found a statement after ";")', 'MULTIPLE_STATEMENTS');
+      }
+      continue;
+    }
+
+    if (token.type !== 'word') continue;
+    const word = token.text.toUpperCase();
+
+    if (BLOCKED_KEYWORDS.has(word)) {
+      return refuse(`Keyword "${word}" is not allowed in READONLY mode`, word);
+    }
+
+    if (BLOCKED_PREFIXES.some((prefix) => word.startsWith(prefix))) {
+      return refuse(
+        `System and extended procedures ("${token.text}") are not allowed in READONLY mode`,
+        'SYSTEM_PROCEDURE'
+      );
+    }
+
+    if (word === 'GO' && isBatchSeparator(query, token)) {
+      return refuse('GO (batch separator) is not allowed: send a single batch', 'BATCH_SEPARATOR');
+    }
+
+    const nextToken = sig[i + 1];
+    if (nextToken && nextToken.type === 'word') {
+      const nextWord = nextToken.text.toUpperCase();
+      const pair = BLOCKED_PAIRS.find(([a, b]) => a === word && b === nextWord);
+      if (pair) {
+        return refuse(`"${pair[0]} ${pair[1]}" is not allowed in READONLY mode`, `${pair[0]} ${pair[1]}`);
+      }
+    }
+  }
+
+  return ok(startWord === 'WITH' ? 'CTE' : 'SELECT');
 }
 
 /**
  * Check if a query is a write operation
  */
 export function isWriteOperation(query: string): boolean {
-  const normalized = normalizeQuery(query);
-  const writeKeywords = ['INSERT', 'UPDATE', 'DELETE', 'MERGE'];
-
-  return writeKeywords.some((keyword) => normalized.startsWith(keyword));
+  const sig = significant(lex(query).tokens);
+  const first = sig.find((t) => t.text !== ';');
+  if (!first || first.type !== 'word') return false;
+  return ['INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(first.text.toUpperCase());
 }
 
 /**
  * Get the type of SQL operation from a query
  */
 export function getQueryType(query: string): string {
-  const normalized = normalizeQuery(query);
-  const firstWord = normalized.split(' ')[0];
-
-  // Handle special cases
-  if (normalized.startsWith('WITH')) {
-    return 'CTE';
-  }
-
-  if (normalized.startsWith('SET SHOWPLAN')) {
-    return 'SHOWPLAN';
-  }
-
-  return firstWord;
+  const sig = significant(lex(query).tokens);
+  const first = sig.find((t) => t.text !== ';');
+  if (!first) return '';
+  const word = first.type === 'word' ? first.text.toUpperCase() : first.text;
+  return word === 'WITH' ? 'CTE' : word;
 }

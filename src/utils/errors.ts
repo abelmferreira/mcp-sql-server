@@ -110,3 +110,13 @@ export function getErrorMessage(error: unknown): string {
 
   return 'An unknown error occurred';
 }
+
+/**
+ * Is this a query timeout (driver request timeout or this server's own timer)?
+ */
+export function isTimeoutError(error: unknown): boolean {
+  if (error instanceof TimeoutError) return true;
+  if (!error || typeof error !== 'object') return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  return code === 'ETIMEOUT' || (typeof message === 'string' && /timeout/i.test(message));
+}

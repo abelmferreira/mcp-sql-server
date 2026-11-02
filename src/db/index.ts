@@ -3,6 +3,8 @@ export {
   executeQuery,
   executeWrite,
   executeScalar,
+  getEstimatedPlan,
+  quoteIdentifier,
   buildInsertQuery,
   buildUpdateQuery,
   buildDeleteQuery,

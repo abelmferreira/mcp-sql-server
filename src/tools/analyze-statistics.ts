@@ -41,7 +41,7 @@ export async function analyzeStatistics(args: unknown): Promise<ToolResponse> {
         END AS [updateDDL],
         COL_NAME(s.object_id, sc.column_id) AS [firstColumn],
         (
-          SELECT STRING_AGG(COL_NAME(s.object_id, sc2.column_id), ', ')
+          SELECT STRING_AGG(COL_NAME(sc2.object_id, sc2.column_id), ', ') WITHIN GROUP (ORDER BY sc2.stats_column_id)
           FROM sys.stats_columns sc2
           WHERE sc2.object_id = s.object_id AND sc2.stats_id = s.stats_id
         ) AS [allColumns]

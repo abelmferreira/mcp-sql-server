@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the connection module directly
 vi.mock('../../../src/db/connection.js', async () => {
+  const { FakeTransaction } = await import('../../mocks/fake-pool.js');
   const NVarChar = Symbol('NVarChar');
   const BigInt = Symbol('BigInt');
   const Float = Symbol('Float');
@@ -9,12 +10,13 @@ vi.mock('../../../src/db/connection.js', async () => {
 
   return {
     getPool: vi.fn(),
-    sql: { NVarChar, BigInt, Float, Bit },
+    sql: { NVarChar, BigInt, Float, Bit, Transaction: FakeTransaction },
   };
 });
 
 import { executeQuery, executeScalar } from '../../../src/db/execute.js';
 import { getPool } from '../../../src/db/connection.js';
+import { fakePool, FakeTransaction } from '../../mocks/fake-pool.js';
 
 // Helper to create mock request
 function createMockRequest(queryResult: { recordset: unknown[]; rowsAffected: number[] }) {
@@ -34,7 +36,7 @@ describe('executeQuery', () => {
       recordset: [{ id: 1, name: 'Test' }],
       rowsAffected: [1],
     });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     const result = await executeQuery('SELECT * FROM users');
 
@@ -49,7 +51,7 @@ describe('executeQuery', () => {
       recordset: [{ id: 1, name: 'John' }],
       rowsAffected: [1],
     });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     const result = await executeQuery(
       'SELECT * FROM users WHERE id = @id',
@@ -65,12 +67,14 @@ describe('executeQuery', () => {
       recordset: [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }],
       rowsAffected: [5],
     });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     const result = await executeQuery('SELECT * FROM users', {}, 3);
 
     expect(result.rows).toHaveLength(3);
-    expect(result.rowCount).toBe(5);
+    expect(result.rowCount).toBe(3);
+    expect(result.truncated).toBe(true);
+    expect(result.truncatedBy).toBe('maxRows');
   });
 
   it('should handle empty results', async () => {
@@ -78,7 +82,7 @@ describe('executeQuery', () => {
       recordset: [],
       rowsAffected: [0],
     });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     const result = await executeQuery('SELECT * FROM users WHERE 1=0');
 
@@ -88,7 +92,7 @@ describe('executeQuery', () => {
 
   it('should bind string parameters correctly', async () => {
     const mockRequest = createMockRequest({ recordset: [], rowsAffected: [0] });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     await executeQuery('SELECT * FROM users WHERE name = @name', { name: 'John' });
 
@@ -97,7 +101,7 @@ describe('executeQuery', () => {
 
   it('should bind multiple parameters', async () => {
     const mockRequest = createMockRequest({ recordset: [], rowsAffected: [0] });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     await executeQuery(
       'SELECT * FROM users WHERE id = @id AND score = @score',
@@ -110,7 +114,7 @@ describe('executeQuery', () => {
 
   it('should bind boolean parameters', async () => {
     const mockRequest = createMockRequest({ recordset: [], rowsAffected: [0] });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     await executeQuery('SELECT * FROM users WHERE active = @active', { active: true });
 
@@ -119,7 +123,7 @@ describe('executeQuery', () => {
 
   it('should bind null parameters', async () => {
     const mockRequest = createMockRequest({ recordset: [], rowsAffected: [0] });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     await executeQuery('SELECT * FROM users WHERE email = @email', { email: null });
 
@@ -149,9 +153,29 @@ describe('executeQuery', () => {
       input: vi.fn().mockReturnThis(),
       query: vi.fn().mockRejectedValue(new Error('Request timeout')),
     };
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
-    await expect(executeQuery('SELECT * FROM large_table')).rejects.toThrow();
+    await expect(executeQuery('SELECT * FROM large_table')).rejects.toThrow(/timed out/);
+  });
+
+  it('should always roll back the READONLY transaction, also after an error', async () => {
+    const before = FakeTransaction.rollbacks;
+    const ok = createMockRequest({ recordset: [{ id: 1 }], rowsAffected: [1] });
+    vi.mocked(getPool).mockResolvedValue(fakePool(ok as never) as never);
+    await executeQuery('SELECT 1 AS id');
+    const failing = { input: vi.fn(), query: vi.fn().mockRejectedValue(new Error('boom')) };
+    vi.mocked(getPool).mockResolvedValue(fakePool(failing as never) as never);
+    await expect(executeQuery('SELECT 1 AS id')).rejects.toThrow('boom');
+    expect(FakeTransaction.rollbacks - before).toBe(2);
+  });
+
+  it('should refuse parameter names that are not plain identifiers', async () => {
+    const mockRequest = createMockRequest({ recordset: [], rowsAffected: [0] });
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
+    await expect(
+      executeQuery('SELECT 1', { 'a int) DROP TABLE t; --': 1 })
+    ).rejects.toThrow(/Invalid parameter name/);
+    expect(mockRequest.input).not.toHaveBeenCalled();
   });
 });
 
@@ -165,7 +189,7 @@ describe('executeScalar', () => {
       recordset: [{ count: 42 }],
       rowsAffected: [1],
     });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     const result = await executeScalar<number>('SELECT COUNT(*) as count FROM users');
 
@@ -177,7 +201,7 @@ describe('executeScalar', () => {
       recordset: [],
       rowsAffected: [0],
     });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     const result = await executeScalar<number>('SELECT 1 WHERE 1=0');
 
@@ -189,7 +213,7 @@ describe('executeScalar', () => {
       recordset: [{ a: 'first', b: 'second' }],
       rowsAffected: [1],
     });
-    vi.mocked(getPool).mockResolvedValue({ request: () => mockRequest } as never);
+    vi.mocked(getPool).mockResolvedValue(fakePool(mockRequest as never) as never);
 
     const result = await executeScalar<string>('SELECT a, b FROM table1');
 

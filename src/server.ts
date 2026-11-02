@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+import type { Readable, Writable } from 'node:stream';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { config } from './config.js';
 import { logger } from './utils/logger.js';
 import { getPool, closePool } from './db/index.js';
+import { createShutdown, installShutdownTriggers } from './shutdown.js';
 
 // Import all tool handlers
 import { sqlExecute } from './tools/sql-execute.js';
@@ -29,12 +32,25 @@ import { sqlUpdate } from './tools/sql-update.js';
 import { sqlDelete } from './tools/sql-delete.js';
 
 /**
+ * Version from package.json. It sits one level above this file both in the
+ * sources (src/server.ts) and in the published package (build/server.js).
+ */
+export function readPackageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: unknown };
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+/**
  * Create and configure the MCP server
  */
 export function createServer(): McpServer {
   const server = new McpServer({
     name: 'mcp-sql-server',
-    version: '1.0.0',
+    version: readPackageVersion(),
   });
 
   logger.info('Registering tools', { readonly: config.READONLY });
@@ -344,18 +360,42 @@ export function createServer(): McpServer {
   return server;
 }
 
+export interface RunServerOptions {
+  /** Defaults to process.stdin */
+  stdin?: Readable;
+  /** Defaults to process.stdout */
+  stdout?: Writable;
+  /** Receives SIGINT / SIGTERM / SIGHUP. Defaults to process */
+  signals?: EventEmitterLike;
+  /** Defaults to process.exit */
+  exit?: (code: number) => void;
+  /** Exit anyway after this long if closing the pool/tunnel hangs */
+  shutdownTimeoutMs?: number;
+}
+
+interface EventEmitterLike {
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
+  off(event: string, listener: (...args: unknown[]) => void): unknown;
+}
+
 /**
- * Run the MCP server
+ * Run the MCP server. The options exist for tests; the CLI uses the defaults.
  */
-export async function runServer(): Promise<void> {
+export async function runServer(options: RunServerOptions = {}): Promise<void> {
+  const stdin = options.stdin ?? process.stdin;
+  const stdout = options.stdout ?? process.stdout;
+  const signals = options.signals ?? process;
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+
   logger.info('Starting MCP SQL Server', {
+    version: readPackageVersion(),
     server: config.SQL_SERVER,
     database: config.SQL_DATABASE,
     readonly: config.READONLY,
     logLevel: config.LOG_LEVEL,
   });
 
-  // Test database connection
+  // Test database connection (fail closed: no connection, no server)
   try {
     await getPool();
     logger.info('Database connection established');
@@ -363,24 +403,25 @@ export async function runServer(): Promise<void> {
     logger.error('Failed to connect to database', {
       error: error instanceof Error ? error.message : 'Unknown error',
     });
-    process.exit(1);
+    exit(1);
+    return;
   }
 
   // Create server
   const server = createServer();
 
   // Create transport
-  const transport = new StdioServerTransport();
+  const transport = new StdioServerTransport(stdin, stdout);
 
-  // Handle shutdown
-  const shutdown = async () => {
-    logger.info('Shutting down...');
-    await closePool();
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  // Close the pool and the SSH tunnel, then exit, when the client goes away
+  // (stdin closed, stdout broken) or on SIGINT / SIGTERM / SIGHUP.
+  const shutdown = createShutdown({
+    closePool,
+    exit,
+    logger,
+    timeoutMs: options.shutdownTimeoutMs,
+  });
+  installShutdownTriggers(shutdown, { stdin, stdout, signals });
 
   // Connect server to transport
   await server.connect(transport);

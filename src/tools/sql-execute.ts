@@ -18,7 +18,16 @@ export async function sqlExecute(args: unknown): Promise<ToolResponse> {
       rowCount: result.rowCount,
       fields: result.fields,
       duration: `${result.duration}ms`,
-      truncated: result.rowCount > maxRows,
+      truncated: result.truncated,
+      ...(result.truncated
+        ? {
+            truncatedBy: result.truncatedBy,
+            note:
+              result.truncatedBy === 'maxBytes'
+                ? 'The response size limit (MAX_RESULT_BYTES) was reached; refine the query or select fewer columns.'
+                : 'More rows are available; raise maxRows (up to MAX_ROWS) or refine the query.',
+          }
+        : {}),
     });
   } catch (error) {
     return formatError(error);

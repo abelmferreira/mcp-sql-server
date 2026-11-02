@@ -14,6 +14,10 @@ export interface QueryResult<T = Record<string, unknown>> {
   rowCount: number;
   fields: FieldInfo[];
   duration: number;
+  /** More rows were available than returned */
+  truncated: boolean;
+  /** Which limit cut the result: the row limit or the response size limit */
+  truncatedBy?: 'maxRows' | 'maxBytes';
 }
 
 /**

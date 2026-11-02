@@ -76,9 +76,11 @@ describe('sqlExecute', () => {
   it('should indicate truncated results', async () => {
     const mockResult = {
       rows: Array(100).fill({ id: 1 }),
-      rowCount: 500,
+      rowCount: 100,
       fields: ['id'],
       duration: 100,
+      truncated: true,
+      truncatedBy: 'maxRows' as const,
     };
     vi.mocked(executeQuery).mockResolvedValue(mockResult);
 
@@ -98,6 +100,7 @@ describe('sqlExecute', () => {
       rowCount: 2,
       fields: ['id'],
       duration: 10,
+      truncated: false,
     };
     vi.mocked(executeQuery).mockResolvedValue(mockResult);
 

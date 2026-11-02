@@ -3,10 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the db module
 vi.mock('../../../src/db/index.js', () => ({
   executeQuery: vi.fn(),
+  getEstimatedPlan: vi.fn(),
 }));
 
 import { analyzeQuery, analyzeQueryDefinition } from '../../../src/tools/analyze-query.js';
-import { executeQuery } from '../../../src/db/index.js';
+import { executeQuery, getEstimatedPlan } from '../../../src/db/index.js';
 
 describe('analyzeQuery', () => {
   beforeEach(() => {
@@ -60,20 +61,10 @@ describe('analyzeQuery', () => {
   });
 
   it('should include execution plan when requested', async () => {
-    // First call: SET SHOWPLAN_XML ON
-    // Second call: actual query (returns plan XML)
-    // Third call: SET SHOWPLAN_XML OFF
-    // Fourth call: stats query
-    vi.mocked(executeQuery)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({
-        rows: [{ 'Microsoft SQL Server 2005 XML Showplan': '<ShowPlanXML StatementEstRows="100" EstimatedTotalSubtreeCost="0.5"></ShowPlanXML>' }],
-        rowCount: 1,
-        fields: [],
-        duration: 50,
-      })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10 });
+    // The plan comes from getEstimatedPlan (SHOWPLAN on one pinned connection);
+    // the statistics query is the only executeQuery call.
+    vi.mocked(getEstimatedPlan).mockResolvedValueOnce('<ShowPlanXML StatementEstRows="100" EstimatedTotalSubtreeCost="0.5"></ShowPlanXML>');
+    vi.mocked(executeQuery).mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10, truncated: false });
 
     const result = await analyzeQuery({
       query: 'SELECT * FROM users',
@@ -88,16 +79,8 @@ describe('analyzeQuery', () => {
   });
 
   it('should parse missing index from execution plan', async () => {
-    vi.mocked(executeQuery)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({
-        rows: [{ 'Microsoft SQL Server 2005 XML Showplan': '<ShowPlanXML><MissingIndexGroup Impact="80.5"></MissingIndexGroup></ShowPlanXML>' }],
-        rowCount: 1,
-        fields: [],
-        duration: 50,
-      })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10 });
+    vi.mocked(getEstimatedPlan).mockResolvedValueOnce('<ShowPlanXML><MissingIndexGroup Impact="80.5"></MissingIndexGroup></ShowPlanXML>');
+    vi.mocked(executeQuery).mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10, truncated: false });
 
     const result = await analyzeQuery({
       query: 'SELECT * FROM users WHERE name = @name',
@@ -110,16 +93,8 @@ describe('analyzeQuery', () => {
   });
 
   it('should detect table scans in execution plan', async () => {
-    vi.mocked(executeQuery)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({
-        rows: [{ 'Microsoft SQL Server 2005 XML Showplan': '<ShowPlanXML><RelOp PhysicalOp="Table Scan"></RelOp></ShowPlanXML>' }],
-        rowCount: 1,
-        fields: [],
-        duration: 50,
-      })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10 });
+    vi.mocked(getEstimatedPlan).mockResolvedValueOnce('<ShowPlanXML><RelOp PhysicalOp="Table Scan"></RelOp></ShowPlanXML>');
+    vi.mocked(executeQuery).mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10, truncated: false });
 
     const result = await analyzeQuery({
       query: 'SELECT * FROM large_table',
@@ -132,16 +107,8 @@ describe('analyzeQuery', () => {
   });
 
   it('should detect parallelism in execution plan', async () => {
-    vi.mocked(executeQuery)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({
-        rows: [{ 'Microsoft SQL Server 2005 XML Showplan': '<ShowPlanXML><Parallelism></Parallelism></ShowPlanXML>' }],
-        rowCount: 1,
-        fields: [],
-        duration: 50,
-      })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10 });
+    vi.mocked(getEstimatedPlan).mockResolvedValueOnce('<ShowPlanXML><Parallelism></Parallelism></ShowPlanXML>');
+    vi.mocked(executeQuery).mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10, truncated: false });
 
     const result = await analyzeQuery({
       query: 'SELECT * FROM users',
@@ -153,16 +120,8 @@ describe('analyzeQuery', () => {
   });
 
   it('should detect sort operations in execution plan', async () => {
-    vi.mocked(executeQuery)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({
-        rows: [{ 'Microsoft SQL Server 2005 XML Showplan': '<ShowPlanXML><RelOp PhysicalOp="Sort"></RelOp><RelOp PhysicalOp="Sort"></RelOp></ShowPlanXML>' }],
-        rowCount: 1,
-        fields: [],
-        duration: 50,
-      })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10 });
+    vi.mocked(getEstimatedPlan).mockResolvedValueOnce('<ShowPlanXML><RelOp PhysicalOp="Sort"></RelOp><RelOp PhysicalOp="Sort"></RelOp></ShowPlanXML>');
+    vi.mocked(executeQuery).mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10, truncated: false });
 
     const result = await analyzeQuery({
       query: 'SELECT * FROM users ORDER BY name, date',
@@ -175,16 +134,8 @@ describe('analyzeQuery', () => {
 
   it('should truncate long execution plan XML', async () => {
     const longXml = '<ShowPlanXML>' + 'x'.repeat(6000) + '</ShowPlanXML>';
-    vi.mocked(executeQuery)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({
-        rows: [{ 'Microsoft SQL Server 2005 XML Showplan': longXml }],
-        rowCount: 1,
-        fields: [],
-        duration: 50,
-      })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10 });
+    vi.mocked(getEstimatedPlan).mockResolvedValueOnce(longXml);
+    vi.mocked(executeQuery).mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10, truncated: false });
 
     const result = await analyzeQuery({
       query: 'SELECT * FROM users',
@@ -196,10 +147,8 @@ describe('analyzeQuery', () => {
   });
 
   it('should handle execution plan errors gracefully', async () => {
-    vi.mocked(executeQuery)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 5 })
-      .mockRejectedValueOnce(new Error('Showplan permission denied'))
-      .mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10 });
+    vi.mocked(getEstimatedPlan).mockRejectedValueOnce(new Error('Showplan permission denied'));
+    vi.mocked(executeQuery).mockResolvedValueOnce({ rows: [], rowCount: 0, fields: [], duration: 10, truncated: false });
 
     const result = await analyzeQuery({
       query: 'SELECT * FROM users',
